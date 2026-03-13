@@ -70,6 +70,33 @@ class AirtableServer {
     return field;
   }
 
+  private validateFieldsPayload(action: string, fields: unknown): Record<string, any> {
+    if (!fields || typeof fields !== "object" || Array.isArray(fields)) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        `\`${action}\` failed: \`fields\` must be an object of Airtable field names to values.`
+      );
+    }
+    return fields as Record<string, any>;
+  }
+
+  private resolveTableIdentifier(action: string, table_name?: string, table_id?: string): string {
+    const identifier = table_id ?? table_name;
+    if (!identifier) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        `\`${action}\` requires either \`table_name\` or \`table_id\`.`
+      );
+    }
+    return identifier;
+  }
+
+  private debugLog(...args: unknown[]) {
+    if (process.env.DEBUG?.includes("airtable-mcp")) {
+      console.error("[airtable-mcp]", ...args);
+    }
+  }
+
   private setupToolHandlers() {
     // Register available tools
     this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -286,12 +313,22 @@ class AirtableServer {
                 type: "string",
                 description: "Name of the table",
               },
+              table_id: {
+                type: "string",
+                description: "ID of the table",
+              },
               fields: {
                 type: "object",
                 description: "Record fields as key-value pairs",
+                additionalProperties: true,
               },
             },
-            required: ["base_id", "table_name", "fields"],
+            required: ["base_id", "fields"],
+            additionalProperties: false,
+            anyOf: [
+              { required: ["table_name"] },
+              { required: ["table_id"] },
+            ],
           },
         },
         {
@@ -308,6 +345,10 @@ class AirtableServer {
                 type: "string",
                 description: "Name of the table",
               },
+              table_id: {
+                type: "string",
+                description: "ID of the table",
+              },
               record_id: {
                 type: "string",
                 description: "ID of the record to update",
@@ -315,9 +356,15 @@ class AirtableServer {
               fields: {
                 type: "object",
                 description: "Record fields to update as key-value pairs",
+                additionalProperties: true,
               },
             },
-            required: ["base_id", "table_name", "record_id", "fields"],
+            required: ["base_id", "record_id", "fields"],
+            additionalProperties: false,
+            anyOf: [
+              { required: ["table_name"] },
+              { required: ["table_id"] },
+            ],
           },
         },
         {
@@ -525,14 +572,22 @@ class AirtableServer {
           }
 
           case "create_record": {
-            const { base_id, table_name, fields } = request.params.arguments as {
+            const { base_id, table_name, table_id, fields } = request.params.arguments as {
               base_id: string;
-              table_name: string;
+              table_name?: string;
+              table_id?: string;
               fields: Record<string, any>;
             };
-            const response = await this.axiosInstance.post(`/${base_id}/${table_name}`, {
-              fields,
-            });
+
+            const resolvedFields = this.validateFieldsPayload("create_record", fields);
+            const tableIdentifier = this.resolveTableIdentifier("create_record", table_name, table_id);
+
+            const payload = { fields: resolvedFields };
+            this.debugLog("create_record params keys:", Object.keys(request.params.arguments ?? {}));
+            this.debugLog("fields keys:", Object.keys(resolvedFields));
+            this.debugLog("payload size:", JSON.stringify(payload).length);
+
+            const response = await this.axiosInstance.post(`/${base_id}/${tableIdentifier}`, payload);
             return {
               content: [{
                 type: "text",
@@ -542,15 +597,25 @@ class AirtableServer {
           }
 
           case "update_record": {
-            const { base_id, table_name, record_id, fields } = request.params.arguments as {
+            const { base_id, table_name, table_id, record_id, fields } = request.params.arguments as {
               base_id: string;
-              table_name: string;
+              table_name?: string;
+              table_id?: string;
               record_id: string;
               fields: Record<string, any>;
             };
+
+            const resolvedFields = this.validateFieldsPayload("update_record", fields);
+            const tableIdentifier = this.resolveTableIdentifier("update_record", table_name, table_id);
+
+            const payload = { fields: resolvedFields };
+            this.debugLog("update_record params keys:", Object.keys(request.params.arguments ?? {}));
+            this.debugLog("fields keys:", Object.keys(resolvedFields));
+            this.debugLog("payload size:", JSON.stringify(payload).length);
+
             const response = await this.axiosInstance.patch(
-              `/${base_id}/${table_name}/${record_id}`,
-              { fields }
+              `/${base_id}/${tableIdentifier}/${record_id}`,
+              payload
             );
             return {
               content: [{
