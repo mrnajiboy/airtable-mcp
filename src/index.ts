@@ -80,6 +80,80 @@ class AirtableServer {
     return fields as Record<string, any>;
   }
 
+  private buildRecordMutationSchema(action: "create" | "update") {
+    const fieldsDescription =
+      action === "create"
+        ? "Record fields as key-value pairs. You may either pass them inside `fields` or supply field names directly at the top level."
+        : "Record fields to update as key-value pairs. You may either pass them inside `fields` or supply field names directly at the top level.";
+
+    return {
+      type: "object",
+      properties: {
+        base_id: {
+          type: "string",
+          description: "ID of the base",
+        },
+        table_name: {
+          type: "string",
+          description: "Name of the table",
+        },
+        table_id: {
+          type: "string",
+          description: "ID of the table",
+        },
+        table: {
+          type: "string",
+          description: "Alias for table_name",
+        },
+        ...(action === "update"
+          ? {
+              record_id: {
+                type: "string",
+                description: "ID of the record to update",
+              },
+            }
+          : {}),
+        fields: {
+          type: "object",
+          description: fieldsDescription,
+          additionalProperties: true,
+        },
+      },
+      required: action === "update" ? ["base_id", "record_id"] : ["base_id"],
+      additionalProperties: true,
+      anyOf: [{ required: ["table_name"] }, { required: ["table_id"] }, { required: ["table"] }],
+    };
+  }
+
+  private coerceLegacyRecordArgs(
+    action: "create_record" | "update_record",
+    args: Record<string, any> | undefined
+  ): Record<string, any> {
+    const normalizedArgs = args && typeof args === "object" ? { ...args } : {};
+
+    if (
+      !normalizedArgs.table_id &&
+      !normalizedArgs.table_name &&
+      typeof normalizedArgs.table === "string"
+    ) {
+      normalizedArgs.table_name = normalizedArgs.table;
+    }
+
+    if (!normalizedArgs.fields) {
+      const reservedKeys = new Set(["base_id", "table_name", "table_id", "table", "record_id"]);
+      const inferredFields = Object.fromEntries(
+        Object.entries(normalizedArgs).filter(([key]) => !reservedKeys.has(key))
+      );
+
+      if (Object.keys(inferredFields).length > 0) {
+        normalizedArgs.fields = inferredFields;
+      }
+    }
+
+    this.debugLog(`${action} normalized arg keys:`, Object.keys(normalizedArgs));
+    return normalizedArgs;
+  }
+
   private resolveTableIdentifier(action: string, table_name?: string, table_id?: string): string {
     const identifier = table_id ?? table_name;
     if (!identifier) {
@@ -302,70 +376,12 @@ class AirtableServer {
         {
           name: "create_record",
           description: "Create a new record in a table",
-          inputSchema: {
-            type: "object",
-            properties: {
-              base_id: {
-                type: "string",
-                description: "ID of the base",
-              },
-              table_name: {
-                type: "string",
-                description: "Name of the table",
-              },
-              table_id: {
-                type: "string",
-                description: "ID of the table",
-              },
-              fields: {
-                type: "object",
-                description: "Record fields as key-value pairs",
-                additionalProperties: true,
-              },
-            },
-            required: ["base_id", "fields"],
-            additionalProperties: false,
-            anyOf: [
-              { required: ["table_name"] },
-              { required: ["table_id"] },
-            ],
-          },
+          inputSchema: this.buildRecordMutationSchema("create"),
         },
         {
           name: "update_record",
           description: "Update an existing record in a table",
-          inputSchema: {
-            type: "object",
-            properties: {
-              base_id: {
-                type: "string",
-                description: "ID of the base",
-              },
-              table_name: {
-                type: "string",
-                description: "Name of the table",
-              },
-              table_id: {
-                type: "string",
-                description: "ID of the table",
-              },
-              record_id: {
-                type: "string",
-                description: "ID of the record to update",
-              },
-              fields: {
-                type: "object",
-                description: "Record fields to update as key-value pairs",
-                additionalProperties: true,
-              },
-            },
-            required: ["base_id", "record_id", "fields"],
-            additionalProperties: false,
-            anyOf: [
-              { required: ["table_name"] },
-              { required: ["table_id"] },
-            ],
-          },
+          inputSchema: this.buildRecordMutationSchema("update"),
         },
         {
           name: "delete_record",
@@ -572,7 +588,12 @@ class AirtableServer {
           }
 
           case "create_record": {
-            const { base_id, table_name, table_id, fields } = request.params.arguments as {
+            const normalizedArgs = this.coerceLegacyRecordArgs(
+              "create_record",
+              request.params.arguments as Record<string, any>
+            );
+
+            const { base_id, table_name, table_id, fields } = normalizedArgs as {
               base_id: string;
               table_name?: string;
               table_id?: string;
@@ -583,7 +604,7 @@ class AirtableServer {
             const tableIdentifier = this.resolveTableIdentifier("create_record", table_name, table_id);
 
             const payload = { fields: resolvedFields };
-            this.debugLog("create_record params keys:", Object.keys(request.params.arguments ?? {}));
+            this.debugLog("create_record params keys:", Object.keys(normalizedArgs ?? {}));
             this.debugLog("fields keys:", Object.keys(resolvedFields));
             this.debugLog("payload size:", JSON.stringify(payload).length);
 
@@ -597,7 +618,12 @@ class AirtableServer {
           }
 
           case "update_record": {
-            const { base_id, table_name, table_id, record_id, fields } = request.params.arguments as {
+            const normalizedArgs = this.coerceLegacyRecordArgs(
+              "update_record",
+              request.params.arguments as Record<string, any>
+            );
+
+            const { base_id, table_name, table_id, record_id, fields } = normalizedArgs as {
               base_id: string;
               table_name?: string;
               table_id?: string;
@@ -609,7 +635,7 @@ class AirtableServer {
             const tableIdentifier = this.resolveTableIdentifier("update_record", table_name, table_id);
 
             const payload = { fields: resolvedFields };
-            this.debugLog("update_record params keys:", Object.keys(request.params.arguments ?? {}));
+            this.debugLog("update_record params keys:", Object.keys(normalizedArgs ?? {}));
             this.debugLog("fields keys:", Object.keys(resolvedFields));
             this.debugLog("payload size:", JSON.stringify(payload).length);
 
